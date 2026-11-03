@@ -26,3 +26,11 @@ disabled-*
 backups/
 *.next
 *.tmp
+*.private.json
+*.local.json
+session.json
+execution-owner.json
+cloud-monitor-*.json
+scheduler-heartbeat.json
+verification-latest.json
+local-backup-*/

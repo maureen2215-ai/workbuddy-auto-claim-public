@@ -37,6 +37,8 @@ def install(python):
         raise RuntimeError("macOS is required")
     sys.path.insert(0, str(ROOT / "src"))
     import background as b
+    if b.load_json(DATA / 'execution-owner.json', {}).get('source') == 'cloud':
+        raise b.Stop('CLOUD_OWNS_SCHEDULE')
     os.umask(0o077)
     config = b.authorization(DATA / "background-authorization.json")
     if not (ROOT / APP).is_dir():
@@ -45,6 +47,8 @@ def install(python):
     DATA.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (DATA / "run.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if b.load_json(DATA / 'execution-owner.json', {}).get('source') == 'cloud':
+            raise b.Stop('CLOUD_OWNS_SCHEDULE')
         # Installation only proceeds after a real read-only daily status check.
         headers, account = b.session(b.AUTH)
         b.Store(DATA / "background-state.json", account)

@@ -1,0 +1,32 @@
+[Unit]
+Description=WorkBuddy isolated cloud reward check
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=workbuddy-claim
+Group=workbuddy-claim
+ExecStart=/usr/bin/python3 -B /opt/workbuddy-auto-claim/cloud.py scheduled
+WorkingDirectory=/var/lib/workbuddy-auto-claim
+LoadCredential=session.json:/etc/workbuddy-auto-claim/session.json
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/workbuddy-auto-claim
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LimitCORE=0
+MemoryMax=96M
+CPUQuota=10%
+TasksMax=16
+TimeoutStartSec=180
+StandardOutput=journal
+StandardError=journal

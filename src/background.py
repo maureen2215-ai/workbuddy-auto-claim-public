@@ -35,12 +35,17 @@ READS = {("POST", STATUS), ("GET", GROWTH + "/tasks"),
          ("GET", GROWTH + "/buddy/travel/config")}
 WRITES = {("POST", CLAIM), ("POST", GROWTH + "/buddy/travel/claim"),
           ("POST", GROWTH + "/buddy/travel/depart")}
+SESSION_REASONS = frozenset({"CHILD_TIMEOUT", "CHILD_TERMINATED", "CHILD_START_FAILED",
+                             "INVALID_PRIVATE_OUTPUT", "HELPER_REJECTED", "DECRYPT_CHECK_FAILED",
+                             "KEY_PROVIDER_UNAVAILABLE", "KEY_PAYLOAD_REJECTED", "KEY_MISMATCH",
+                             "AUTHENTICATION_FAILED", "TOKEN_REJECTED"})
 
 
 class Stop(Exception):
-    def __init__(self, code, not_sent=False):
+    def __init__(self, code, not_sent=False, reason=None):
         self.code = code
         self.not_sent = not_sent
+        self.reason = reason if reason in SESSION_REASONS else None
         super().__init__(code)
 
 
@@ -95,6 +100,11 @@ def atomic(path, value):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(name, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         if os.path.exists(name):
             os.unlink(name)
@@ -200,16 +210,38 @@ def desktop_token(wrapper):
     # Do not inherit NODE_OPTIONS or injection/search-path overrides.
     env = {key: os.environ[key] for key in ("HOME", "TMPDIR", "LANG") if key in os.environ}
     env["ELECTRON_RUN_AS_NODE"] = "1"
-    try:
-        result = subprocess.run([str(executable), str(helper), "--private-pipe"],
-                                input=json.dumps(wrapper).encode(), stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, env=env, timeout=15, check=False)
-        token = result.stdout.decode("ascii")
-        if result.returncode or not re.fullmatch(r"[A-Za-z0-9._~+/-]{1,32768}=*", token):
-            raise Stop("LOGIN_DECRYPT_FAILED")
-        return token
-    except (OSError, ValueError, subprocess.SubprocessError):
-        raise Stop("LOGIN_DECRYPT_FAILED") from None
+    # Retry a local process failure once, before constructing any network client.
+    # Authentication, key/schema validation and malformed output never retry.
+    for attempt in range(2):
+        try:
+            result = subprocess.run([str(executable), str(helper), "--private-pipe"],
+                                    input=json.dumps(wrapper).encode(), stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, env=env, timeout=15, check=False)
+        except subprocess.TimeoutExpired:
+            reason = "CHILD_TIMEOUT"
+        except OSError:
+            raise Stop("LOGIN_DECRYPT_FAILED", reason="CHILD_START_FAILED") from None
+        else:
+            if result.returncode < 0:
+                reason = "CHILD_TERMINATED"
+            elif result.returncode:
+                # Never log raw stderr; recognize only exact, fixed helper markers.
+                marker = (result.stderr or b"").strip()
+                known = {("WB_SESSION_ERROR=" + value).encode(): value
+                         for value in SESSION_REASONS}
+                raise Stop("LOGIN_DECRYPT_FAILED", reason=known.get(marker, "HELPER_REJECTED"))
+            else:
+                try:
+                    token = result.stdout.decode("ascii")
+                except (UnicodeError, AttributeError):
+                    raise Stop("LOGIN_DECRYPT_FAILED", reason="INVALID_PRIVATE_OUTPUT") from None
+                if not re.fullmatch(r"[A-Za-z0-9._~+/-]{1,32768}=*", token):
+                    raise Stop("LOGIN_DECRYPT_FAILED", reason="INVALID_PRIVATE_OUTPUT")
+                return token
+        if attempt == 0:
+            time.sleep(0.5)
+        else:
+            raise Stop("LOGIN_DECRYPT_FAILED", reason=reason)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -470,7 +502,7 @@ MESSAGES = {
     "LOGIN_REJECTED": "登录已失效，请在 WorkBuddy 重新登录",
     "LOGIN_REQUIRED": "没有可用登录状态，请打开 WorkBuddy 检查登录",
     "ENCRYPTED_LOGIN_UNSUPPORTED": "登录凭证格式已变化，自动领取需要兼容修复",
-    "LOGIN_DECRYPT_FAILED": "无法读取加密登录状态，自动领取需要检查",
+    "LOGIN_DECRYPT_FAILED": "读取本机登录状态失败，自动领取需要检查",
     "LOGIN_HELPER_UNAVAILABLE": "登录兼容组件不可用，自动领取需要检查",
     "NETWORK_UNAVAILABLE": "网络暂不可用，稍后补查",
     "PREVIOUS_REQUEST_UNVERIFIED": "上次请求结果未确认，已停止重复提交",
@@ -574,6 +606,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=("diagnose", "run", "scheduled"))
     args = parser.parse_args()
+    if args.mode != 'diagnose' and load_json(DATA / 'execution-owner.json', {}).get('source') == 'cloud':
+        print(json.dumps({'status': 'CLOUD_OWNS_SCHEDULE', 'hint': 'Use cloud/cloud_control.py status; keep the local claimant stopped.'}))
+        return 1
     os.umask(0o077)
     DATA.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (DATA / "run.lock").open("a") as lock:
@@ -581,6 +616,9 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
+        if args.mode != 'diagnose' and load_json(DATA / 'execution-owner.json', {}).get('source') == 'cloud':
+            print(json.dumps({'status': 'CLOUD_OWNS_SCHEDULE'}))
+            return 1
         moment = now()
         if args.mode == "scheduled" and (not due(moment) or not (DATA / "enabled").is_file()):
             return 0
@@ -612,7 +650,10 @@ def main():
             store.save()
             return log_result(rows, args.mode)
         except Stop as error:
-            return log_result([{"status": error.code}], args.mode)
+            row = {"status": error.code}
+            if error.reason:
+                row["reason"] = error.reason
+            return log_result([row], args.mode)
         except Exception:
             # Never print exception text: it can contain request headers or session fields.
             return log_result([{"status": "LOCAL_UNEXPECTED_ERROR"}], args.mode)

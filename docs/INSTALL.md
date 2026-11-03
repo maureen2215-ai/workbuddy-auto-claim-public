@@ -1,5 +1,7 @@
 # 安装与首次验收
 
+本页适用于 Mac 本机模式。希望电脑关机时仍领取，请按 [云端部署与切换](CLOUD.md) 操作。同一账号不同时启用两个领取器。
+
 仅针对自己的 Mac 和本人 WorkBuddy 账号。默认每日积分，可选能力另行授权。下面所有路径都相对于克隆后的仓库；运行数据在本人 `~/Library/Application Support/WorkBuddyAutoClaim/`。
 
 ## 1. 检查环境和已有任务

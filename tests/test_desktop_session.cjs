@@ -34,3 +34,25 @@ test('unknown scheme stops before native key lookup', () => {
 test('wrong master key fails authentication', () => {
   assert.throws(() => decrypt(wrap(fixture()), () => JSON.stringify({...payload, atRestSecretKey: Buffer.alloc(32, 8).toString('base64')})));
 });
+test('failure reasons distinguish native provider, payload, key and authentication', () => {
+  const e = fixture();
+  for (const [wrapper, provider, reason] of [
+    [wrap(e), () => {throw Error('private-native-error');}, 'KEY_PROVIDER_UNAVAILABLE'],
+    [wrap(e), () => 'not-json-private-data', 'KEY_PAYLOAD_REJECTED'],
+    [wrap(e), () => JSON.stringify({...payload, atRestSecretKey: Buffer.alloc(32, 8).toString('base64')}), 'KEY_MISMATCH'],
+    [wrap({...e, authTag: Buffer.alloc(16).toString('base64')}), () => JSON.stringify(payload), 'AUTHENTICATION_FAILED']
+  ]) {
+    assert.throws(() => decrypt(wrapper, provider), error =>
+      error.sessionReason === reason && !error.message.includes('private'));
+  }
+});
+test('CLI error emits only a fixed marker and no token or input', () => {
+  const {spawnSync} = require('node:child_process');
+  const path = require('node:path');
+  const child = spawnSync(process.execPath,
+    [path.resolve(__dirname, '../src/desktop_session.cjs'), '--private-pipe'],
+    {input: JSON.stringify({privateInput: 'synthetic-secret'}), encoding: 'utf8'});
+  assert.equal(child.status, 2);
+  assert.equal(child.stdout, '');
+  assert.equal(child.stderr, 'WB_SESSION_ERROR=DECRYPT_CHECK_FAILED\n');
+});

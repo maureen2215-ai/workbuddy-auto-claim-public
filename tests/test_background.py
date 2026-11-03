@@ -359,14 +359,77 @@ class DesktopSessionTest(unittest.TestCase):
             self.assertNotIn(wrapper["envelope"], str(args))
             self.assertNotIn("NODE_OPTIONS", kw["env"])
             self.assertEqual(kw["stdout"], b.subprocess.PIPE)
-            self.assertEqual(kw["stderr"], b.subprocess.DEVNULL)
+            self.assertEqual(kw["stderr"], b.subprocess.PIPE)
 
     def test_helper_failure_does_not_expose_output(self):
         with patch.object(Path, "is_file", return_value=True), \
-             patch.object(b.subprocess, "run", return_value=b.subprocess.CompletedProcess([], 2, b"sensitive-test-value")):
+             patch.object(b.subprocess, "run", return_value=b.subprocess.CompletedProcess([], 2, b"sensitive-test-value", b"secret-stderr")) as run:
             with self.assertRaises(b.Stop) as error:
                 b.desktop_token({"$wbEncrypted": 1, "envelope": "fake"})
             self.assertEqual(str(error.exception), "LOGIN_DECRYPT_FAILED")
+            self.assertEqual(error.exception.reason, "HELPER_REJECTED")
+            run.assert_called_once()
+
+    def test_process_timeout_retries_once_before_returning_token(self):
+        responses = [b.subprocess.TimeoutExpired(["helper"], 15),
+                     b.subprocess.CompletedProcess([], 0, b"synthetic-token", b"")]
+        with patch.object(Path, "is_file", return_value=True), \
+             patch.object(b.time, "sleep") as sleep, \
+             patch.object(b.subprocess, "run", side_effect=responses) as run:
+            self.assertEqual(b.desktop_token({"$wbEncrypted": 1, "envelope": "fake"}), "synthetic-token")
+            self.assertEqual(run.call_count, 2)
+            sleep.assert_called_once_with(0.5)
+
+    def test_repeated_process_failure_stops_after_two_attempts(self):
+        for response, reason in [(b.subprocess.TimeoutExpired(["helper"], 15), "CHILD_TIMEOUT"),
+                                 (b.subprocess.CompletedProcess([], -9, b"", b""), "CHILD_TERMINATED")]:
+            with self.subTest(reason=reason), patch.object(Path, "is_file", return_value=True), \
+                 patch.object(b.time, "sleep"), patch.object(b.subprocess, "run") as run:
+                if isinstance(response, Exception):
+                    run.side_effect = response
+                else:
+                    run.return_value = response
+                with self.assertRaises(b.Stop) as error:
+                    b.desktop_token({"$wbEncrypted": 1, "envelope": "fake"})
+                self.assertEqual(error.exception.reason, reason)
+                self.assertEqual(run.call_count, 2)
+
+    def test_fixed_helper_reason_never_retries_or_exposes_output(self):
+        for reason in ("KEY_PROVIDER_UNAVAILABLE", "KEY_PAYLOAD_REJECTED", "KEY_MISMATCH", "AUTHENTICATION_FAILED"):
+            response = b.subprocess.CompletedProcess([], 2, b"secret-output",
+                                                    ("WB_SESSION_ERROR=" + reason + "\n").encode())
+            with self.subTest(reason=reason), patch.object(Path, "is_file", return_value=True), \
+                 patch.object(b.subprocess, "run", return_value=response) as run:
+                with self.assertRaises(b.Stop) as error:
+                    b.desktop_token({"$wbEncrypted": 1, "envelope": "fake"})
+                self.assertEqual(error.exception.reason, reason)
+                self.assertEqual(str(error.exception), "LOGIN_DECRYPT_FAILED")
+                run.assert_called_once()
+
+    def test_bad_private_output_and_start_error_do_not_retry(self):
+        responses = [(b.subprocess.CompletedProcess([], 0, b"invalid output\n", b""), "INVALID_PRIVATE_OUTPUT"),
+                     (b.subprocess.CompletedProcess([], 0, b"\xff", b""), "INVALID_PRIVATE_OUTPUT"),
+                     (OSError("sensitive-path"), "CHILD_START_FAILED")]
+        for response, reason in responses:
+            with self.subTest(reason=reason), patch.object(Path, "is_file", return_value=True), \
+                 patch.object(b.subprocess, "run") as run:
+                if isinstance(response, Exception):run.side_effect=response
+                else:run.return_value=response
+                with self.assertRaises(b.Stop) as error:
+                    b.desktop_token({"$wbEncrypted": 1, "envelope": "fake"})
+                self.assertEqual(error.exception.reason, reason)
+                self.assertEqual(str(error.exception), "LOGIN_DECRYPT_FAILED")
+                run.assert_called_once()
+
+    def test_failure_reason_is_fixed_metadata_in_main_result(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(b, "DATA", Path(tmp)), \
+             patch.object(b.sys, "argv", ["background.py", "diagnose"]), \
+             patch.object(b, "authorization", return_value={}), \
+             patch.object(b, "session", side_effect=b.Stop("LOGIN_DECRYPT_FAILED", reason="CHILD_TIMEOUT")), \
+             patch.object(b, "log_result", return_value=1) as log:
+            self.assertEqual(b.main(), 1)
+            log.assert_called_once_with([{"status":"LOGIN_DECRYPT_FAILED", "reason":"CHILD_TIMEOUT"}], "diagnose")
+        self.assertIsNone(b.Stop("LOGIN_DECRYPT_FAILED", reason="raw-secret").reason)
 
     def test_valid_encrypted_session_preserves_account_guard(self):
         with tempfile.TemporaryDirectory() as tmp:

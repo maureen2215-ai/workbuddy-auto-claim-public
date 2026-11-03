@@ -2,6 +2,7 @@
 """Local status and preview-first pause/resume. Never deletes reward state."""
 import argparse
 import datetime
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -38,20 +39,27 @@ def main(argv=None):
             subprocess.run(["/bin/launchctl", "bootout", service], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print("已暂停后续任务；已发出的请求不能撤回。程序、授权与去重记录全部保留。")
     else:
-        if not PLIST.is_file(): raise RuntimeError()
-        sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
-        import background as b
-        b.authorization(DATA / "background-authorization.json")
-        os.umask(0o077)
-        was_enabled = (DATA / "enabled").exists()
-        (DATA / "enabled").touch(mode=0o600)
-        try:
-            if probe.returncode != 0:
-                subprocess.run(["/bin/launchctl", "bootstrap", domain, str(PLIST)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            if not was_enabled: (DATA / "enabled").unlink(missing_ok=True)
-            raise
-        print("已恢复；系统按原配置检查，可能处理未领取奖励。")
+        with (DATA / "run.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            owner = DATA / 'execution-owner.json'
+            if owner.exists() and json.loads(owner.read_text()).get('source') == 'cloud':
+                print('{"error":"CLOUD_OWNS_SCHEDULE","hint":"先停云端并同步最新账本，再执行受控回退"}')
+                return 1
+            probe = subprocess.run(["/bin/launchctl", "print", service], capture_output=True, text=True)
+            if not PLIST.is_file(): raise RuntimeError()
+            sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+            import background as b
+            b.authorization(DATA / "background-authorization.json")
+            os.umask(0o077)
+            was_enabled = (DATA / "enabled").exists()
+            (DATA / "enabled").touch(mode=0o600)
+            try:
+                if probe.returncode != 0:
+                    subprocess.run(["/bin/launchctl", "bootstrap", domain, str(PLIST)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                if not was_enabled: (DATA / "enabled").unlink(missing_ok=True)
+                raise
+            print("已恢复；系统按原配置检查，可能处理未领取奖励。")
     return 0
 
 

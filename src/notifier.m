@@ -26,6 +26,11 @@ static void Finish(void) {
     c.title=test ? @"WorkBuddy 领取提醒 · 测试" : @"WorkBuddy 需要重新登录";
     c.body=test ? @"这是一条修复后的测试通知，不代表领取失败。以后登录、兼容或持续网络故障会在这里提醒你。点击可打开 WorkBuddy。" :
         @"自动领取遇到登录失效。请点击此通知打开 WorkBuddy，重新登录后程序会继续检查。";
+    NSData *ownerData=[NSData dataWithContentsOfFile:[Directory stringByAppendingPathComponent:@"execution-owner.json"]];
+    id owner=ownerData ? [NSJSONSerialization JSONObjectWithData:ownerData options:0 error:nil] : nil;
+    if([Mode isEqual:@"--login"] && [owner isKindOfClass:[NSDictionary class]] && [owner[@"source"] isEqual:@"cloud"]) {
+        c.body=@"云端领取的登录凭证已失效。请先在 WorkBuddy 重新登录，再运行云端凭证更新工具；仅打开应用不会自动更新服务器。";
+    }
     if ([Mode isEqual:@"--attention"]) {
         c.title=@"WorkBuddy 自动领取未完成";
         c.body=@"后台领取遇到持续故障或兼容问题，请打开 WorkBuddy 检查，并让维护本项目的 AI 查看故障记录。必要时先手动领取；点击可打开 WorkBuddy。";

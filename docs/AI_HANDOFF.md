@@ -2,9 +2,13 @@
 
 ## 目标和正本
 
-这是社区 macOS 本机自动领奖脚本。核心是 `src/background.py`；`src/desktop_session.cjs` 兼容当前标准加密登录；`src/notifier.m` 负责本机通知。程序访问 `https://copilot.tencent.com` 的固定状态/奖励接口。它不是官方公开签到 SDK，不保证接口稳定。
+这是支持 Mac 本机或 Linux 云端二选一的社区自动领奖脚本。奖励核心是 `src/background.py`，云端适配是 `src/cloud.py`；`src/desktop_session.cjs` 兼容当前标准加密登录；`src/notifier.m` 负责本机通知。程序访问 `https://copilot.tencent.com` 的固定状态/奖励接口。它不是官方公开签到 SDK，不保证接口稳定。
 
 本仓库源码是开发正本。实际运行副本位于当前用户 `~/Library/Application Support/WorkBuddyAutoClaim/background/`，通知 app 在同一应用支持目录；修改仓库不自动修改运行副本。launchd 标签 `local.workbuddy.autoclaim`。依据实际 `git status`、文件摘要、plist 和日志判断版本，不依赖旧聊天或维护者电脑路径。
+
+## 先判断执行模式
+
+用户选择云端、已有 execution-owner.json=cloud 或本机 cloud-control 配置时，先按 [CLOUD.md](CLOUD.md) 查服务器。不能用本机旧日志判断云端结果，也不能直接恢复本机任务。云端 stage、activate、凭证保存和回退按该页逐阶段验收。下方首次安装流程适用于本机模式。
 
 ## 首次接手：先报告，后部署
 
@@ -30,7 +34,7 @@
 
 先按 KNOWN_ISSUES 判定问题属于调度、登录、协议、奖励状态或通知。保留原日志与去重记录；`PREVIOUS_REQUEST_UNVERIFIED` 先回查，不能删 pending。账号变化停止，不能把旧账号的记录改名套用。
 
-修改 API 白名单、去重、认证、加密或状态流程前读 DESIGN，增加能发现真实风险的合成测试。令牌只留进程内存，密文通过 helper stdin，令牌通过其私有 stdout 管道返回 Python；不要独立执行 helper、打印输出或把异常正文送进日志。未知 schema/scheme 以状态码停止。
+修改 API 白名单、去重、认证、加密或状态流程前读 DESIGN，增加能发现真实风险的合成测试。Mac 上令牌只留进程内存；云端凭证保存须有独立授权。密文通过 helper stdin，令牌通过其私有 stdout 管道返回 Python；不要独立执行 helper、打印输出或把异常正文送进日志。未知 schema/scheme 以状态码停止。
 
 通知更新涉及签名；不要无故覆盖已授权 app。部署前取得互斥锁，备份程序与 plist，保留状态和授权，部署后比对摘要。仅源码改动不得宣布已上线。
 
